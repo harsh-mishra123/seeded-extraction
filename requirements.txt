@@ -1,0 +1,14 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.6
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+openai==1.66.3  # Updated OpenAI client
+pandas==2.2.3  # Latest pandas with Python 3.13 support
+openpyxl==3.1.5
+pdfplumber==0.11.5
+python-docx==1.1.2
+aiofiles==24.1.0
+# Removing spacy for now as it might have compatibility issues
+# We'll add a fallback pattern extractor that doesn't need it

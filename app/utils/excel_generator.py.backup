@@ -1,0 +1,202 @@
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils.dataframe import dataframe_to_rows
+import logging
+from typing import Dict, List
+from datetime import datetime
+
+from app.models.financial import FinancialExtractionResult, IncomeStatementItem, ConfidenceLevel
+
+logger = logging.getLogger(__name__)
+
+class ExcelGenerator:
+    def __init__(self):
+        # Define styles
+        self.header_font = Font(bold=True, color="FFFFFF")
+        self.header_fill = PatternFill(start_color="2F75B5", end_color="2F75B5", fill_type="solid")
+        self.warning_fill = PatternFill(start_color="FFE699", end_color="FFE699", fill_type="solid")
+        self.error_fill = PatternFill(start_color="F4A7B9", end_color="F4A7B9", fill_type="solid")
+        self.border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+    
+    def generate(self, result: FinancialExtractionResult, output_path: str):
+        """Generate Excel file with extraction results"""
+        
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            # Create main data sheet
+            self._create_data_sheet(writer, result)
+            
+            # Create metadata sheet
+            self._create_metadata_sheet(writer, result)
+            
+            # Create raw extracts sheet
+            self._create_raw_extracts_sheet(writer, result)
+            
+            # Create summary sheet
+            self._create_summary_sheet(writer, result)
+            
+            # Get workbook and apply formatting
+            workbook = writer.book
+            self._apply_formatting(workbook)
+    
+    def _create_data_sheet(self, writer, result: FinancialExtractionResult):
+        """Create main financial data sheet"""
+        
+        # Prepare data for DataFrame
+        years = sorted(result.data.keys())
+        
+        # Create multi-index columns
+        columns = pd.MultiIndex.from_product([years, ['Value', 'Confidence', 'Notes']])
+        
+        # Prepare data
+        data = []
+        for item in IncomeStatementItem:
+            row = []
+            for year in years:
+                if year in result.data and item in result.data[year]:
+                    value_obj = result.data[year][item]
+                    row.extend([
+                        value_obj.value,
+                        value_obj.confidence.value,
+                        value_obj.notes or ''
+                    ])
+                else:
+                    row.extend([None, ConfidenceLevel.MISSING.value, 'Not found'])
+            data.append(row)
+        
+        # Create DataFrame
+        df = pd.DataFrame(data, index=[item.value for item in IncomeStatementItem], columns=columns)
+        
+        # Write to Excel
+        df.to_excel(writer, sheet_name='Financial Data', merge_cells=True)
+    
+    def _create_metadata_sheet(self, writer, result: FinancialExtractionResult):
+        """Create metadata sheet"""
+        metadata_data = {
+            'Property': [
+                'Document Name',
+                'Extraction Date',
+                'Currency',
+                'Unit',
+                'Overall Confidence',
+                'Missing Items'
+            ],
+            'Value': [
+                result.document_name,
+                result.extraction_date,
+                result.currency.value,
+                result.unit.value,
+                result.confidence_overall.value,
+                ', '.join([item.value for item in result.missing_items]) if result.missing_items else 'None'
+            ]
+        }
+        
+        df = pd.DataFrame(metadata_data)
+        df.to_excel(writer, sheet_name='Metadata', index=False)
+    
+    def _create_raw_extracts_sheet(self, writer, result: FinancialExtractionResult):
+        """Create sheet with raw text extracts"""
+        rows = []
+        for year, items in result.raw_extracts.items():
+            for item_name, raw_text in items.items():
+                rows.append({
+                    'Year': year,
+                    'Line Item': item_name,
+                    'Raw Extract': raw_text
+                })
+        
+        if rows:
+            df = pd.DataFrame(rows)
+            df.to_excel(writer, sheet_name='Raw Extracts', index=False)
+    
+    def _create_summary_sheet(self, writer, result: FinancialExtractionResult):
+        """Create summary sheet with key metrics"""
+        
+        # Calculate some basic metrics
+        years = sorted(result.data.keys())
+        
+        if years:
+            summary_data = {
+                'Metric': [],
+                'Latest Year': [],
+                'Previous Year': [],
+                'Change': [],
+                'Change %': []
+            }
+            
+            # Get latest year and previous year
+            latest_year = years[-1]
+            prev_year = years[-2] if len(years) > 1 else None
+            
+            # Key metrics to summarize
+            key_metrics = [
+                IncomeStatementItem.REVENUE,
+                IncomeStatementItem.GROSS_PROFIT,
+                IncomeStatementItem.OPERATING_INCOME,
+                IncomeStatementItem.NET_INCOME,
+                IncomeStatementItem.EBITDA
+            ]
+            
+            for metric in key_metrics:
+                latest_value = result.data.get(latest_year, {}).get(metric)
+                prev_value = result.data.get(prev_year, {}).get(metric) if prev_year else None
+                
+                if latest_value and latest_value.value:
+                    summary_data['Metric'].append(metric.value)
+                    summary_data['Latest Year'].append(latest_value.value)
+                    
+                    if prev_value and prev_value.value:
+                        summary_data['Previous Year'].append(prev_value.value)
+                        change = latest_value.value - prev_value.value
+                        change_pct = (change / abs(prev_value.value)) * 100 if prev_value.value != 0 else 0
+                        summary_data['Change'].append(change)
+                        summary_data['Change %'].append(f"{change_pct:.1f}%")
+                    else:
+                        summary_data['Previous Year'].append('N/A')
+                        summary_data['Change'].append('N/A')
+                        summary_data['Change %'].append('N/A')
+            
+            df = pd.DataFrame(summary_data)
+            df.to_excel(writer, sheet_name='Summary', index=False)
+    
+    def _apply_formatting(self, workbook):
+        """Apply styling to workbook"""
+        
+        for sheet_name in workbook.sheetnames:
+            sheet = workbook[sheet_name]
+            
+            # Style header row
+            for cell in sheet[1]:
+                cell.font = self.header_font
+                cell.fill = self.header_fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.border = self.border
+            
+            # Adjust column widths
+            for column in sheet.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                
+                adjusted_width = min(max_length + 2, 50)
+                sheet.column_dimensions[column_letter].width = adjusted_width
+            
+            # Apply conditional formatting for confidence levels
+            if sheet_name == 'Financial Data':
+                for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+                    for cell in row:
+                        if cell.value == ConfidenceLevel.LOW.value:
+                            cell.fill = self.warning_fill
+                        elif cell.value == ConfidenceLevel.MISSING.value:
+                            cell.fill = self.error_fill
